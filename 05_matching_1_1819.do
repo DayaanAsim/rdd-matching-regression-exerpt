@@ -1,9 +1,9 @@
 *===============================================================================
-*        Cash Transfers (BISP) and Women's Empowerment in Pakistan
-* 		    			Purpose: Matching (2018-19)
-*						PSLM 2018-19 & PSLM 2013-14
-* 				   Dr. Syeda Warda Riaz & Dr. Hadia Majid
-* 						  AUTHOR: Syed Dayaan Asim 
+*   Impact of Social Safety Net Programs on Household Outcomes
+* 		         Purpose: Coarsened Exact Matching (CEM)
+*			         Household Survey Wave 1 & Wave 2
+*
+* 				  AUTHOR: Syed Dayaan Asim 
 * 								  June 2026
 *===============================================================================
 
@@ -17,132 +17,98 @@
 	capture log close
 	
 	*Install required package:
-
 	cap ssc install cem
 	
 * ------------------------------------------------------------------------------
 **# 2. Defining Directories
 * ------------------------------------------------------------------------------
 
-	global root "C:\Users\HP\Documents\1 AI HUB\BISP & Empowerment (PSLM 1819-1314)"
+	global root "C:\Project_Workspace\Data_and_Analysis"
 
 *--- Subsequent Roots ---
-	global raw_1819 "$root/01_Data/1_Raw/PSLM 2018-19"
-	global raw_1314 "$root/01_Data/1_Raw/PSLM 2013-14"
+	global raw_wave1 "$root/01_Data/1_Raw/Wave_1"
+	global raw_wave2 "$root/01_Data/1_Raw/Wave_2"
 	global processed "$root/01_Data/2_Processed"
-	global tables "$root/03_Outputs/Tables"
-	global figures "$root/03_Outputs/Figures"
+	global tables    "$root/03_Outputs/Tables"
+	global figures   "$root/03_Outputs/Figures"
 
 *--- Initialize Log File ---
 
-	log using "$root/03_Outputs/Logs/pslm1819_matching_1.log", replace text
+	log using "$root/03_Outputs/Logs/survey_wave1_matching.log", replace text
 	
 * ------------------------------------------------------------------------------
-* 4. Merging Section 6a which has information on Utility Bills
+* 3. Merging Consumption Section (Utility Expenditures)
 * ------------------------------------------------------------------------------
-	*--- Utility Bills ---
-/* Water Charges = 044101, Refuse/Waste collection = 044201, Electricity = 045101, Generator expenses = 045102, Gas Charges = 045201, LPG = 045202
-	OR
-Water = 040000 , Electricity / Gas = 045000*/
 	
-	use "$raw_1819/sec_6a.dta", clear
+	use "$raw_wave1/consumption_sec.dta", clear
 	desc
-*We need to combine all values in order to assess overall usage and value paid
-	egen item_value = rowtotal(v1 v2 v3 v4)
+    
+* Combine column values to assess overall consumption value paid
+	egen item_value = rowtotal(val1 val2 val3 val4)
 
-*Keeping the required variables:
-
-	keep if inlist(itc, 44101, 44201, 45101, 45102, 45201, 45202)
-	keep hhcode itc item_value
+* Keeping the required utility classification codes:
+	keep if inlist(item_code, 101, 102, 103, 104, 105, 106)
+	keep hh_id item_code item_value
 	
-*Reshape to wide:
-
-	reshape wide item_value, i(hhcode) j(itc)
+* Reshape to wide format:
+	reshape wide item_value, i(hh_id) j(item_code)
 	
-	rename item_value45101 exp_electricity
-	rename item_value45201 exp_gas
-	rename item_value44101 exp_water
-	rename item_value44201 exp_refuse
-	rename item_value45102 exp_generator
-	rename item_value45202 exp_lpg
+	rename item_value101 exp_utility1
+	rename item_value102 exp_utility2
+	rename item_value103 exp_utility3
+	rename item_value104 exp_utility4
+	rename item_value105 exp_utility5
+	rename item_value106 exp_utility6
 	
 	desc
 	
-*Saving:
-
-	save "$processed/utility_wide_1819.dta", replace
+* Saving wide utility dataset:
+	save "$processed/utilities_wide_wave1.dta", replace
 	
 * ------------------------------------------------------------------------------
-* 5. PSLM 2018-19
+* 4. Main Survey Matching Preparation
 * ------------------------------------------------------------------------------
 
-	use "$processed/pslm1819_bisp_analysis.dta", clear
+	use "$processed/analysis_dataset_wave1.dta", clear
 	
 *--- Conducting the Merge ---
 
-	merge m:1 hhcode using "$processed/utility_wide_1819.dta", keep(match master) nogenerate
-/*
-    Result                      Number of obs
-    -----------------------------------------
-    Not matched                        16,179
-        from master                    16,179  
-        from using                          0  
+	merge m:1 hh_id using "$processed/utilities_wide_wave1.dta", keep(match master) nogenerate
 
-    Matched                           143,462  
-    -----------------------------------------
-*/
-	count if hh_tag == 1	// we have 24,721 households while our section 6a had 22,349 households. This is liekly the reason for some of the master observations not finding a match
-	count if hh_tag == 1 & exp_electricity == .
-	display 24721-3307	//When we apply all from sec_6a as missing we will likely get less and it will account for all the unmatched observations/households.
+	count if hh_indicator == 1	
+	count if hh_indicator == 1 & exp_utility1 == .
 	
-*I have, for now, considered the missing to be = 0 but can change this later as per instructions
-
-	recode exp_electricity exp_gas exp_water exp_refuse exp_generator exp_lpg (. = 0) 
+* Recode missing expenditure values to zero for structural non-responses
+	recode exp_utility1 exp_utility2 exp_utility3 exp_utility4 exp_utility5 exp_utility6 (. = 0) 
 	
-	egen exp_utilities_total = rowtotal(exp_electricity exp_gas exp_water exp_refuse exp_generator exp_lpg)
+	egen exp_total_utility = rowtotal(exp_utility1 exp_utility2 exp_utility3 exp_utility4 exp_utility5 exp_utility6)
 
 * ------------------------------------------------------------------------------
-* 6. Generating Variables needed for Matching
+* 5. Generating Variables needed for Matching
 * ------------------------------------------------------------------------------
-/*
-For matching, we will use the score itself and some other hh characteristics: province, region, demographic profile of the hh, male ratio, female ratio, average schooling of all adult males, average schooling of all adult females, 
-To this I would like you to add - expenditure on utility bills as that has come up in reports to determine BISP status. 
 
-This is the list of variables for matching:
-
-Score region1 province1 province3 province4 female_head 
-average_age_f_final average_age_m_final total_married_f_hh average_edu_f_final average_edu_m_final moremales 
-
-All these variables are constructed at the household level as averages. To do please add utility bills and compare the matched sample.
-*/
-
-	gen hh_member = 1		// this displays a 1 next to each member and will be used in the following variable creations
+	gen hh_member = 1		
 	
 	*--- Generating Gender Dummies ---
-	
-	gen male = (s1aq04 == 1)
-	gen female = (s1aq04 == 2)
+	gen male = (gender_code == 1)
+	gen female = (gender_code == 2)
 	
 	*--- Age Dummies ---
-	
 	gen child = (age < 15)
 	gen elderly = (age >= 60)
 	
-	gen age_m = age if s1aq04 == 1
-	gen age_f = age if s1aq04 == 2
+	gen age_m = age if gender_code == 1
+	gen age_f = age if gender_code == 2
 	
-	*--- Female head ---
+	*--- Female Head Indicator ---
+	gen f_head_ind = (relation_code == 1 & gender_code == 2)
 	
-	gen f_head_ind = (s1aq02 == 1 & s1aq04 == 2)
+	*--- Adult Education Metrics ---
+	gen adult_male_edu = edu_code if gender_code == 1 & age >= 15
+	gen adult_female_edu = edu_code if gender_code == 2 & age >= 15
 	
-	*--- Adult Education ---
-	
-	gen adult_male_edu = s2bq05 if s1aq04 == 1 & age >= 15
-	gen adult_female_edu = s2bq05 if s1aq04 == 2 & age >= 15
-	
-	*--- Married Females ---
-	
-	gen married_female = (s1aq04 == 2 & s1aq07 == 2)
+	*--- Marital Status ---
+	gen married_female = (gender_code == 2 & marital_code == 2)
 
 *--- Collapsing to the Household Level ---
 
@@ -153,121 +119,104 @@ All these variables are constructed at the household level as averages. To do pl
 	total_elderly = elderly	///
 	total_married_f = married_female	///
 	(max) female_head = f_head_ind	///
-	filter_head_spouse = head_spouse	///
-	filter_sum_spouse = sum_head_spouse	///
+	filter_head_spouse = sample_filter1	///
+	filter_sum_spouse = sample_filter2	///
 	(mean) average_age_m = age_m	///
 	average_age_f = age_f	///
 	average_edu_m = adult_male_edu	///
 	average_edu_f = adult_female_edu	///
-	exp_electricity exp_gas exp_water	///
-	exp_refuse exp_generator exp_lpg	///
-	exp_utilities_total	///
-	score0708 BISP,	///
-	by(hhcode psu province region)
+	exp_utility1 exp_utility2 exp_utility3	///
+	exp_utility4 exp_utility5 exp_utility6	///
+	exp_total_utility	///
+	poverty_score_raw program_participation,	///
+	by(hh_id psu geo_area_code region_type)
 	
-	desc	// 24,721 observations following the collapse
-	isid hhcode		// success!
+	desc	
+	isid hh_id		
 	
 * ------------------------------------------------------------------------------
-* 7. Post Collapse
+* 6. Post Collapse Cleaning
 * ------------------------------------------------------------------------------
 
-	*--- Applying the simple household filter ---
-	
-	keep if filter_head_spouse == 1 & filter_sum_spouse == 1	// 1,851 households removed
+	*--- Applying household structure filter ---
+	keep if filter_head_spouse == 1 & filter_sum_spouse == 1	
 	drop filter_head_spouse filter_sum_spouse
 	
-	*--- Creating the moremales dummy ---
-*Takes a value of 1 if more males in the household than females
-
-	gen byte moremales = (total_male > total_female)
-	label var moremales "Household has more males than females"
+	*--- Generating Household Composition Dummies ---
+	gen byte male_majority = (total_male > total_female)
+	label var male_majority "Household has more males than females"
 	
-	*--- Region Dummy ---
+	*--- Regional Dummies ---
+	gen byte region_rural = (region_type == 1)
+	label var region_rural "Rural Workspace"
 	
-	gen byte region1 = (region == 1)
-	label var region1 "Rural"
+	*--- Geographic Dummies ---
+	gen byte geo_area1 = (geo_area_code == 1)
+	gen byte geo_area2 = (geo_area_code == 2)
+	gen byte geo_area3 = (geo_area_code == 3)
 	
-	*--- Province Dummies ---
-	
-	gen byte province1 = (province ==  1)
-	gen byte province3 = (province == 3)
-	gen byte province4 = (province == 4)
-	
-	label var province1 "KPK"
-	label var province3 "Sindh"
-	label var province4 "Balochistan"
-	
-	*--- Structutal Missing into Zero ---
-	
-	codebook average_age_f
-	codebook average_age_m	// 378 missing
-	
+	*--- Convert Structural Missings into Zero ---
 	recode average_age_m average_age_f (. = 0)
 	recode average_edu_m average_edu_f (. = 0)
 	
 * ------------------------------------------------------------------------------
-* 8. Final Matching Base
+* 7. Final Matching Base Export
 * ------------------------------------------------------------------------------
 
-	keep hhcode psu BISP score0708 region1 province1 province3 province4 female_head average_age_f average_age_m total_married_f average_edu_f average_edu_m moremales exp_electricity exp_gas exp_water exp_refuse exp_generator exp_lpg exp_utilities_total
+	keep hh_id psu program_participation poverty_score_raw region_rural geo_area1 geo_area2 geo_area3 female_head average_age_f average_age_m total_married_f average_edu_f average_edu_m male_majority exp_utility1 exp_utility2 exp_utility3 exp_utility4 exp_utility5 exp_utility6 exp_total_utility
 	
-	save "$processed/pslm1819_cem_ready.dta", replace
-	
+	save "$processed/analysis_ready_cem.dta", replace
 	summ
 	
 * ------------------------------------------------------------------------------
-* 9. Coarsened Matching
+* 8. Coarsened Exact Matching Execution
 * ------------------------------------------------------------------------------
 
-	count if score0708 <= 16.17
-	keep if score0708 <= 16.17
+	keep if poverty_score_raw <= 16.17
 					 
 * ------------------------------------------------------------------------------
-* --- SPECIFICATION 1: No Utilities ---
+* --- SPECIFICATION 1: Baseline Covariates (No Utilities) ---
 * ------------------------------------------------------------------------------
 
 	display "=== RUNNING CEM: SPECIFICATION 1 ==="
 	
-	cem score0708 (#4)	///
+	cem poverty_score_raw (#4)	///
 	average_age_f (#5) average_age_m (#5)	///
 	average_edu_f (#4) average_edu_m (#4)	///
 	total_married_f (#4)	///
-	region1 province1 province3 province4 female_head moremales,	///
-	treatment(BISP)
+	region_rural geo_area1 geo_area2 geo_area3 female_head male_majority,	///
+	treatment(program_participation)
 
-*--- Balance Groups ---
+*--- Balance Groups Setup ---
 
 	gen byte grp_m1 = .
-	replace grp_m1 = 1 if BISP == 1
-	replace  grp_m1 = 2 if BISP == 0 & cem_matched == 0
-	replace  grp_m1 = 3 if BISP == 0 & cem_matched == 1
+	replace grp_m1 = 1 if program_participation == 1
+	replace grp_m1 = 2 if program_participation == 0 & cem_matched == 0
+	replace grp_m1 = 3 if program_participation == 0 & cem_matched == 1
 	
-*--- Creating a Loop for Balance Table ---
+*--- Imbalance Diagnostic Loop ---
 
-	local bal_covars score0708 average_age_f average_age_m total_married_f ///
-                 average_edu_f average_edu_m female_head moremales ///
-                 region1 province1 province3 province4
+	local bal_covars poverty_score_raw average_age_f average_age_m total_married_f ///
+                     average_edu_f average_edu_m female_head male_majority ///
+                     region_rural geo_area1 geo_area2 geo_area3
 
-display _n "BALANCE INFO: SPECIFICATION 1"
+	display _n "BALANCE INFO: SPECIFICATION 1"
 	display "Variable | Col 1 (Full Treated) | Col 2 (Full Control) | p(1vs2) | Col 4 (Matched Treated) | Col 5 (Matched Control) | p(4vs5)"
 	
 	foreach v of local bal_covars {
-		* 1. Pre-match Raw Statistics
-		quietly summarize `v' if BISP == 1
+		quietly summarize `v' if program_participation == 1
 		local m1 = r(mean)
-		quietly summarize `v' if BISP == 0
+		quietly summarize `v' if program_participation == 0
 		local m2 = r(mean)
-		quietly ttest `v', by(BISP)
+		quietly ttest `v', by(program_participation)
 		local p_1vs2 = r(p)
 		
-		* 2. Post-match CEM Sample Statistics (Applying Weights)
-		quietly summarize `v' [aw=cem_weight] if BISP == 1
+		quietly summarize `v' [aw=cem_weight] if program_participation == 1
 		local m4 = r(mean)
-		quietly summarize `v' [aw=cem_weight] if BISP == 0
+		quietly summarize `v' [aw=cem_weight] if program_participation == 0
 		local m5 = r(mean)
-		quietly regress `v' BISP [aw=cem_weight] if cem_matched == 1
-		quietly test BISP
+		quietly regress `v' program_participation [aw=cem_weight] if cem_matched == 1
+		quietly test program_participation
 		local p_4vs5 = r(p)
 		
 		display "`v' | " %8.3f `m1' " | " %8.3f `m2' " | " %5.3f `p_1vs2' " | " %8.3f `m4' " | " %8.3f `m5' " | " %5.3f `p_4vs5'
@@ -278,49 +227,47 @@ display _n "BALANCE INFO: SPECIFICATION 1"
 	rename cem_strata  strata_spec1
 	
 * ------------------------------------------------------------------------------
-* --- SPECIFICATION 2: Total Utilities ---
+* --- SPECIFICATION 2: Aggregated Utility Expenditures ---
 * ------------------------------------------------------------------------------
 	
-	display _n "=== RUNNING CEM: SPECIFICATION 2 (WITH UTILITIES) ==="
+	display _n "=== RUNNING CEM: SPECIFICATION 2 (WITH AGGREGATED UTILITIES) ==="
 	
-	cem score0708 (#4) ///
+	cem poverty_score_raw (#4) ///
     average_age_f (#5) average_age_m (#5) ///
     average_edu_f (#4) average_edu_m (#4) ///
     total_married_f (#4) ///
-    exp_utilities_total (#4) /// 
-    region1 province1 province3 province4 female_head moremales, ///
-    treatment(BISP)
+    exp_total_utility (#4) /// 
+    region_rural geo_area1 geo_area2 geo_area3 female_head male_majority, ///
+    treatment(program_participation)
 	
-*--- Balance Groups ---
+*--- Balance Groups Setup ---
 
 	gen byte grp_m2 = .
-	replace  grp_m2 = 1 if BISP == 1
-	replace  grp_m2 = 2 if BISP == 0 & cem_matched == 0
-	replace  grp_m2 = 3 if BISP == 0 & cem_matched == 1
+	replace grp_m2 = 1 if program_participation == 1
+	replace grp_m2 = 2 if program_participation == 0 & cem_matched == 0
+	replace grp_m2 = 3 if program_participation == 0 & cem_matched == 1
 	
-	local bal_covars2 score0708 average_age_f average_age_m total_married_f average_edu_f average_edu_m exp_utilities_total female_head moremales region1 province1 province3 province4
+	local bal_covars2 poverty_score_raw average_age_f average_age_m total_married_f average_edu_f average_edu_m exp_total_utility female_head male_majority region_rural geo_area1 geo_area2 geo_area3
 	
-*--- Creating a Loop for Balance Table ---
+*--- Imbalance Diagnostic Loop ---
 	
-display _n "BALANCE INFO: SPECIFICATION 2"
+	display _n "BALANCE INFO: SPECIFICATION 2"
 	display "Variable | Col 1 (Full Treated) | Col 2 (Full Control) | p(1vs2) | Col 4 (Matched Treated) | Col 5 (Matched Control) | p(4vs5)"
 	
 	foreach v of local bal_covars2 {
-		* 1. Pre-match Raw Statistics
-		quietly summarize `v' if BISP == 1
+		quietly summarize `v' if program_participation == 1
 		local m1 = r(mean)
-		quietly summarize `v' if BISP == 0
+		quietly summarize `v' if program_participation == 0
 		local m2 = r(mean)
-		quietly ttest `v', by(BISP)
+		quietly ttest `v', by(program_participation)
 		local p_1vs2 = r(p)
 		
-		* 2. Post-match CEM Sample Statistics (Applying Weights)
-		quietly summarize `v' [aw=cem_weight] if BISP == 1
+		quietly summarize `v' [aw=cem_weight] if program_participation == 1
 		local m4 = r(mean)
-		quietly summarize `v' [aw=cem_weight] if BISP == 0
+		quietly summarize `v' [aw=cem_weight] if program_participation == 0
 		local m5 = r(mean)
-		quietly regress `v' BISP [aw=cem_weight] if cem_matched == 1
-		quietly test BISP
+		quietly regress `v' program_participation [aw=cem_weight] if cem_matched == 1
+		quietly test program_participation
 		local p_4vs5 = r(p)
 		
 		display "`v' | " %8.3f `m1' " | " %8.3f `m2' " | " %5.3f `p_1vs2' " | " %8.3f `m4' " | " %8.3f `m5' " | " %5.3f `p_4vs5'
@@ -331,49 +278,47 @@ display _n "BALANCE INFO: SPECIFICATION 2"
 	rename cem_strata  strata_spec2
 	
 * ------------------------------------------------------------------------------
-* --- SPECIFICATION 3: Separate Utilities ---
+* --- SPECIFICATION 3: Disaggregated Utility Expenditures ---
 * ------------------------------------------------------------------------------
 
 	display _n "=== RUNNING CEM: SPECIFICATION 3 (DISAGGREGATED UTILITIES) ==="
 	
-	cem score0708 (#4) ///
+	cem poverty_score_raw (#4) ///
     average_age_f (#5) average_age_m (#5) ///
     average_edu_f (#4) average_edu_m (#4) ///
     total_married_f (#4) ///
-    exp_electricity (#4) exp_gas (#4) exp_water (#4) exp_refuse (#4) exp_generator (#4) exp_lpg (#4) ///
-    region1 province1 province3 province4 female_head moremales, ///
-    treatment(BISP)
+    exp_utility1 (#4) exp_utility2 (#4) exp_utility3 (#4) exp_utility4 (#4) exp_utility5 (#4) exp_utility6 (#4) ///
+    region_rural geo_area1 geo_area2 geo_area3 female_head male_majority, ///
+    treatment(program_participation)
 	
-*--- Balance Groups ---
+*--- Balance Groups Setup ---
 
 	gen byte grp_m3 = .
-	replace  grp_m3 = 1 if BISP == 1
-	replace  grp_m3 = 2 if BISP == 0 & cem_matched == 0
-	replace  grp_m3 = 3 if BISP == 0 & cem_matched == 1
+	replace grp_m3 = 1 if program_participation == 1
+	replace grp_m3 = 2 if program_participation == 0 & cem_matched == 0
+	replace grp_m3 = 3 if program_participation == 0 & cem_matched == 1
 		
-	local bal_covars3 score0708 average_age_f average_age_m total_married_f average_edu_f average_edu_m exp_electricity exp_gas exp_water exp_refuse exp_generator exp_lpg female_head moremales region1 province1 province3 province4
+	local bal_covars3 poverty_score_raw average_age_f average_age_m total_married_f average_edu_f average_edu_m exp_utility1 exp_utility2 exp_utility3 exp_utility4 exp_utility5 exp_utility6 female_head male_majority region_rural geo_area1 geo_area2 geo_area3
 	
-*--- Creating a Loop for Balance Table ---
+*--- Imbalance Diagnostic Loop ---
 
-display _n "BALANCE INFO: SPECIFICATION 3"
+	display _n "BALANCE INFO: SPECIFICATION 3"
 	display "Variable | Col 1 (Full Treated) | Col 2 (Full Control) | p(1vs2) | Col 4 (Matched Treated) | Col 5 (Matched Control) | p(4vs5)"
 	
 	foreach v of local bal_covars3 {
-		* 1. Pre-match Raw Statistics
-		quietly summarize `v' if BISP == 1
+		quietly summarize `v' if program_participation == 1
 		local m1 = r(mean)
-		quietly summarize `v' if BISP == 0
+		quietly summarize `v' if program_participation == 0
 		local m2 = r(mean)
-		quietly ttest `v', by(BISP)
+		quietly ttest `v', by(program_participation)
 		local p_1vs2 = r(p)
 		
-		* 2. Post-match CEM Sample Statistics (Applying Weights)
-		quietly summarize `v' [aw=cem_weight] if BISP == 1
+		quietly summarize `v' [aw=cem_weight] if program_participation == 1
 		local m4 = r(mean)
-		quietly summarize `v' [aw=cem_weight] if BISP == 0
+		quietly summarize `v' [aw=cem_weight] if program_participation == 0
 		local m5 = r(mean)
-		quietly regress `v' BISP [aw=cem_weight] if cem_matched == 1
-		quietly test BISP
+		quietly regress `v' program_participation [aw=cem_weight] if cem_matched == 1
+		quietly test program_participation
 		local p_4vs5 = r(p)
 		
 		display "`v' | " %8.3f `m1' " | " %8.3f `m2' " | " %5.3f `p_1vs2' " | " %8.3f `m4' " | " %8.3f `m5' " | " %5.3f `p_4vs5'
@@ -384,25 +329,16 @@ display _n "BALANCE INFO: SPECIFICATION 3"
 	rename cem_strata  strata_spec3
 	
 * ------------------------------------------------------------------------------
-* 10. Assertions
+* 9. Post-Estimation Verification & Export
 * ------------------------------------------------------------------------------
 
-	count if score0708 <=16.17	// 2,730 households are eligible
-	count if BISP == 1	// 686 households have received BISP
-	count if BISP == 0	// 2,044 households do not receive BISP
+	count if poverty_score_raw <= 16.17	
+	count if program_participation == 1	
+	count if program_participation == 0	
 	
-	tabulate BISP grp_m1
+	tabulate program_participation grp_m1
 	
-* ------------------------------------------------------------------------------
-* 11. Finish & Save
-* ------------------------------------------------------------------------------
-
-	save "$processed/pslm1819_matched.dta", replace
+	save "$processed/final_matched_sample.dta", replace
 	
 	log close
 	exit
-	
-
-	
-	
-	
